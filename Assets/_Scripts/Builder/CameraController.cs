@@ -2,32 +2,36 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 
-public class CameraControl : MonoBehaviour
+public class CameraController : MonoBehaviour
 {
+    // ===============================
+    // INTERNAL STATE (ALWAYS DEFINED)
+    // ===============================
+    private bool rotatingByTouch = false;
+    private Vector2 lastTouchPos;
+    private Vector3 mouseWorldPosStart;
 
-
-#if UNITY_IOS || UNITY_ANDROID || UNITY_EDITOR
-private bool rotatingByTouch;
-private Vector2 lastTouchPos;
-#endif
-
+    // ===============================
+    // REFERENCES
+    // ===============================
     public GameObject parentModel;
-    public static CameraControl Instance { get; private set; }
+    public static CameraController Instance { get; private set; }
+
+    // ===============================
+    // SETTINGS
+    // ===============================
     [Header("Sensitivity Settings")]
     [SerializeField] private float rotationSpeed = 1000f;
     [SerializeField] private float zoomSpeed = 10f;
     [SerializeField] private float panSpeed = 1f;
-
-
-    [SerializeField] private float touchZoomSpeed = 0.0005f;
-    //[Header("Zoom Limits (CAD Style)")]
-    //[SerializeField] private float minZoomDistance = 1f;
-    //[SerializeField] private float maxZoomDistance = 100f;
+    [SerializeField] private float touchRotationMultiplier = 0.0025f;
 
     [Header("Fit View")]
     [SerializeField] private float defaultFieldOfView = 60f;
 
-    private Vector3 mouseWorldPosStart;
+    // ===============================
+    // LIFECYCLE
+    // ===============================
     private void Awake()
     {
         if (Instance != null && Instance != this)
@@ -37,113 +41,199 @@ private Vector2 lastTouchPos;
         }
         Instance = this;
     }
-    
-    void Update()
-{
-    if (NavBarController.currentview != NavBarController.View.Building)
-        return;
 
-#if UNITY_IOS || UNITY_ANDROID
-    HandleTouchCamera();
-#if !UNITY_EDITOR
-    return; // ❗ prevents mouse input on phone
-#endif
-#endif
-
-    // ===== DESKTOP CONTROLS (UNCHANGED) =====
-    if (Input.GetMouseButton(1))
-        CamOrbit();
-
-    if (Input.GetKey(KeyCode.LeftShift) && Input.GetKey(KeyCode.F))
-        FitToScreen();
-
-    if (Input.GetMouseButtonDown(2))
-        mouseWorldPosStart = GetPerspectivePos();
-
-    if (Input.GetMouseButton(2))
-        Pan();
-
-    if (!IsPointerOverInteractiveUI())
-        Zoom(Input.GetAxis("Mouse ScrollWheel"));
-}
-
-
-    private void CamOrbit()
+    private void Update()
     {
-        float verticalInput = Input.GetAxis("Mouse Y") * rotationSpeed * Time.deltaTime;
-        float horizontalInput = Input.GetAxis("Mouse X") * rotationSpeed * Time.deltaTime;
-        transform.Rotate(Vector3.right, -verticalInput);
-        transform.Rotate(Vector3.up, horizontalInput, Space.World);
+        // Only allow camera control in Builder mode
+        if (NavBarController.currentview != NavBarController.View.Building)
+            return;
+
+#if UNITY_ANDROID || UNITY_IOS
+        HandleTouchCamera();
+        return;
+#else
+        HandleMouseCamera();
+#endif
     }
 
-    private void Pan()
+    // ===============================
+    // DESKTOP (MOUSE) CONTROLS
+    // ===============================
+    private void HandleMouseCamera()
+    {
+        if (Input.GetMouseButton(1))
+            OrbitMouse();
+
+        if (Input.GetKey(KeyCode.LeftShift) && Input.GetKeyDown(KeyCode.F))
+            FitToScreen();
+
+        if (Input.GetMouseButtonDown(2))
+            mouseWorldPosStart = GetPerspectivePos();
+
+        if (Input.GetMouseButton(2))
+            PanMouse();
+
+        if (!IsPointerOverInteractiveUI())
+            Zoom(Input.GetAxis("Mouse ScrollWheel"));
+    }
+
+    private void OrbitMouse()
+    {
+        float vertical = Input.GetAxis("Mouse Y") * rotationSpeed * Time.deltaTime;
+        float horizontal = Input.GetAxis("Mouse X") * rotationSpeed * Time.deltaTime;
+
+        transform.Rotate(Vector3.right, -vertical, Space.Self);
+        transform.Rotate(Vector3.up, horizontal, Space.World);
+    }
+
+    private void PanMouse()
     {
         float moveX = -Input.GetAxis("Mouse X") * panSpeed;
-        float moveY = -Input.GetAxis("Mouse Y") * panSpeed ;
+        float moveY = -Input.GetAxis("Mouse Y") * panSpeed;
 
         Camera cam = Camera.main;
-        Vector3 right = cam.transform.right;
-        Vector3 up = cam.transform.up;
-
-        cam.transform.position += right * moveX + up * moveY;
+        cam.transform.position += cam.transform.right * moveX + cam.transform.up * moveY;
     }
 
-    private void Zoom(float zoomDiff)
+    // ===============================
+    // TOUCH CONTROLS
+    // ===============================
+    private void HandleTouchCamera()
     {
-        if (zoomDiff == 0) return;
+        if (ControlManager.Instance != null &&
+            ControlManager.Instance.IsDraggingPart)
+            return;
 
-        Camera cam = Camera.main;
+#if UNITY_EDITOR
+        // ---- Editor: simulate 1-finger touch with mouse ----
+        if (Input.GetMouseButtonDown(0))
+        {
+            rotatingByTouch = true;
+            lastTouchPos = Input.mousePosition;
+        }
+        else if (Input.GetMouseButton(0) && rotatingByTouch)
+        {
+            Vector2 delta = (Vector2)Input.mousePosition - lastTouchPos;
+            lastTouchPos = Input.mousePosition;
+            RotateByTouch(delta);
+        }
+        else if (Input.GetMouseButtonUp(0))
+        {
+            rotatingByTouch = false;
+        }
+#else
+        // ---- Device ----
+        if (Input.touchCount == 1)
+        {
+            Touch t = Input.GetTouch(0);
 
-        float distance = zoomDiff * zoomSpeed;
-        Vector3 newPos = cam.transform.position + cam.transform.forward * distance;
+            if (EventSystem.current.IsPointerOverGameObject(t.fingerId))
+                return;
 
-        // Apply position
-        cam.transform.position = newPos;
-
-        // ✅ Dynamically adjust clipping planes
-        float zoomDistance = Vector3.Distance(cam.transform.position, parentModel.transform.position);
-
-        cam.nearClipPlane = Mathf.Max(0.01f, zoomDistance * 0.01f);  // 1% of distance, min 0.01
-        cam.farClipPlane = Mathf.Max(zoomDistance * 4f, 100f);       // 4x zoom distance, min 100
+            if (t.phase == TouchPhase.Began)
+            {
+                rotatingByTouch = true;
+                lastTouchPos = t.position;
+            }
+            else if (t.phase == TouchPhase.Moved && rotatingByTouch)
+            {
+                RotateByTouch(t.deltaPosition);
+            }
+            else if (t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled)
+            {
+                rotatingByTouch = false;
+            }
+        }
+        else if (Input.touchCount == 2)
+        {
+            HandleTwoFingerPanZoom();
+        }
+#endif
     }
 
+    private void RotateByTouch(Vector2 delta)
+    {
+        float speed = rotationSpeed * touchRotationMultiplier;
+        transform.Rotate(Vector3.up, delta.x * speed, Space.World);
+        transform.Rotate(Vector3.right, -delta.y * speed, Space.Self);
+    }
+
+    private void HandleTwoFingerPanZoom()
+    {
+        Touch t0 = Input.GetTouch(0);
+        Touch t1 = Input.GetTouch(1);
+
+        // ---- PAN ----
+        Vector2 avgDelta = (t0.deltaPosition + t1.deltaPosition) * 0.5f;
+        Vector3 pan =
+            (-Camera.main.transform.right * avgDelta.x +
+             -Camera.main.transform.up * avgDelta.y) * panSpeed * 0.01f;
+
+        Camera.main.transform.position += pan;
+
+        // ---- ZOOM ----
+        Vector2 prev0 = t0.position - t0.deltaPosition;
+        Vector2 prev1 = t1.position - t1.deltaPosition;
+
+        float prevDist = Vector2.Distance(prev0, prev1);
+        float currDist = Vector2.Distance(t0.position, t1.position);
+
+        float diff = currDist - prevDist;
+        Zoom(diff * 0.01f);
+    }
+
+    // ===============================
+    // SHARED UTILITIES
+    // ===============================
+    private void Zoom(float zoomDelta)
+    {
+        if (zoomDelta == 0f || parentModel == null)
+            return;
+
+        Camera cam = Camera.main;
+        cam.transform.position += cam.transform.forward * zoomDelta * zoomSpeed;
+
+        float dist = Vector3.Distance(cam.transform.position, parentModel.transform.position);
+        cam.nearClipPlane = Mathf.Max(0.01f, dist * 0.01f);
+        cam.farClipPlane = Mathf.Max(100f, dist * 4f);
+    }
 
     public void FitToScreen()
     {
-        Camera.main.fieldOfView = defaultFieldOfView;
-        Bounds bound = GetBound(parentModel);
-        Vector3 boundSize = bound.size;
-        float boundDiagonal = Mathf.Sqrt((boundSize.x * boundSize.x) + (boundSize.y * boundSize.y) + (boundSize.z * boundSize.z));
-        float camDistanceToBoundCentre = boundDiagonal / (2.0f * Mathf.Tan(Camera.main.fieldOfView / 2.0f * Mathf.Deg2Rad));
-        float camDistanceToBoundWithOffset = camDistanceToBoundCentre + boundDiagonal / 2.0f - (Camera.main.transform.position - transform.position).magnitude;
-        transform.position = bound.center + (-transform.forward * camDistanceToBoundWithOffset);
-        // Adjust clipping planes after fitting
-        float zoomDistance = Vector3.Distance(Camera.main.transform.position, parentModel.transform.position);
-        Camera.main.nearClipPlane = Mathf.Max(0.01f, zoomDistance * 0.01f);
-        Camera.main.farClipPlane = Mathf.Max(zoomDistance * 4f, 100f);
+        if (parentModel == null) return;
 
+        Camera cam = Camera.main;
+        cam.fieldOfView = defaultFieldOfView;
+
+        Bounds b = GetBounds(parentModel);
+        float radius = b.extents.magnitude;
+        float distance = radius / Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+
+        cam.transform.position = b.center - cam.transform.forward * distance;
+        cam.nearClipPlane = Mathf.Max(0.01f, distance * 0.01f);
+        cam.farClipPlane = Mathf.Max(100f, distance * 4f);
     }
 
-    private Bounds GetBound(GameObject parentGameObj)
+    private Bounds GetBounds(GameObject root)
     {
-        Bounds bound = new Bounds(parentGameObj.transform.position, Vector3.zero);
-        var rList = parentGameObj.GetComponentsInChildren<Renderer>();
-        foreach (Renderer r in rList)
-        {
-            bound.Encapsulate(r.bounds);
-        }
-        return bound;
+        Renderer[] renderers = root.GetComponentsInChildren<Renderer>();
+        Bounds b = new Bounds(root.transform.position, Vector3.zero);
+
+        foreach (Renderer r in renderers)
+            b.Encapsulate(r.bounds);
+
+        return b;
     }
 
-    public Vector3 GetPerspectivePos()
+    private Vector3 GetPerspectivePos()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-        Plane plane = new Plane(transform.forward, 0f);
+        Plane plane = new Plane(transform.forward, Vector3.zero);
         plane.Raycast(ray, out float dist);
         return ray.GetPoint(dist);
     }
 
-    bool IsPointerOverInteractiveUI()
+    private bool IsPointerOverInteractiveUI()
     {
         PointerEventData eventData = new PointerEventData(EventSystem.current)
         {
@@ -158,114 +248,6 @@ private Vector2 lastTouchPos;
             if (r.gameObject.layer == LayerMask.NameToLayer("UI"))
                 return true;
         }
-
         return false;
     }
-
-
-
-  
-void HandleTouchCamera()
-{
-#if UNITY_EDITOR
-        // simulate 1-finger touch with mouse
-    if (ControlManager.CurrentTouchOwner == ControlManager.TouchOwner.Part)
-        return;
-
-        if (Input.GetMouseButtonDown(0))
-    {
-        
-        if (!IsPartBeingDragged())
-        {
-            rotatingByTouch = true;
-            lastTouchPos = Input.mousePosition;
-        }
-    }
-    else if (Input.GetMouseButton(0) && rotatingByTouch)
-    {
-        Vector2 delta =
-            (Vector2)Input.mousePosition - lastTouchPos;
-        lastTouchPos = Input.mousePosition;
-
-        RotateCameraByDelta(delta);
-    }
-    else if (Input.GetMouseButtonUp(0))
-    {
-        rotatingByTouch = false;
-    }
-#else
-    if (Input.touchCount == 1)
-    {
-        Touch t = Input.GetTouch(0);
-
-        if (EventSystem.current.IsPointerOverGameObject(t.fingerId))
-            return;
-
-        if (IsPartBeingDragged())
-            return;
-
-        if (t.phase == TouchPhase.Began)
-        {
-            rotatingByTouch = true;
-            lastTouchPos = t.position;
-        }
-        else if (t.phase == TouchPhase.Moved && rotatingByTouch)
-        {
-            RotateCameraByDelta(t.deltaPosition);
-        }
-        else if (t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled)
-        {
-            rotatingByTouch = false;
-        }
-    }
-    else
-    {
-        HandleTwoFingerPanZoom();
-    }
-#endif
-}
-
-
-
-
-void HandleTwoFingerPanZoom()
-{
-    Touch t0 = Input.GetTouch(0);
-    Touch t1 = Input.GetTouch(1);
-
-    // ---- PAN ----
-    Vector2 avgDelta = (t0.deltaPosition + t1.deltaPosition) * 0.5f;
-    Vector3 pan =
-        (-Camera.main.transform.right * avgDelta.x +
-         -Camera.main.transform.up * avgDelta.y) * panSpeed * 0.01f;
-
-    Camera.main.transform.position += pan;
-
-    // ---- ZOOM ----
-    Vector2 prev0 = t0.position - t0.deltaPosition;
-    Vector2 prev1 = t1.position - t1.deltaPosition;
-
-    float prevDist = Vector2.Distance(prev0, prev1);
-    float currDist = Vector2.Distance(t0.position, t1.position);
-
-    float diff = currDist - prevDist;
-    Zoom(diff * 0.01f);
-}
-
-
-
-void RotateCameraByDelta(Vector2 delta)
-{
-    float speed = rotationSpeed * touchZoomSpeed;
-
-    transform.Rotate(Vector3.up, delta.x * speed, Space.World);
-    transform.Rotate(Vector3.right, -delta.y * speed, Space.Self);
-}
-
-bool IsPartBeingDragged()
-{
-     return ControlManager.Instance != null &&
-           ControlManager.Instance.IsDraggingPart;
-}
-
 }

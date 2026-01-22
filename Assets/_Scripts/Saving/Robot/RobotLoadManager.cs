@@ -41,7 +41,7 @@ public class RobotLoadManager : MonoBehaviour
         // Create new Robot root under robotRoot
         GameObject robot = new GameObject("Robot");
         robot.transform.SetParent(robotRoot.transform, false);
-        CameraControl.Instance.parentModel = robot;
+        CameraController.Instance.parentModel = robot;
         ControlManager.Instance.spawnRoot = robot.transform;
 
 

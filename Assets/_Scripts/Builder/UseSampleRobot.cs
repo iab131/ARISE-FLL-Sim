@@ -32,7 +32,7 @@ public class UseSampleRobot : MonoBehaviour
         GameObject go = Instantiate(sampleRobot, root.transform);
         go.name = "Robot";
 
-        CameraControl.Instance.parentModel = go;
+        CameraController.Instance.parentModel = go;
         ControlManager.Instance.spawnRoot = go.transform;
     }
 

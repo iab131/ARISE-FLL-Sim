@@ -135,6 +135,7 @@ private TouchIntent touchIntent = TouchIntent.None;
         if (IsInputFieldFocused() || MotorLabelManager.Instance.IsModalOpen)
             return;
 
+#if UNITY_IOS || UNITY_ANDRIOD
         if (Application.isMobilePlatform)
         {
             if (currentMode == Mode.Move)
@@ -144,6 +145,7 @@ private TouchIntent touchIntent = TouchIntent.None;
 
             return;
         }
+#endif
 
         // DESKTOP
         HandleModeHotkeys();
